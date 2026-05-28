@@ -31,13 +31,31 @@ struct ContentView: View {
                 cameraLayer
                     .ignoresSafeArea()
 
-                // Layer 2: Skeleton (frequent updates, no layout impact)
+                // Layer 2: Skeleton (frequent updates, no hit testing)
                 skeletonLayer
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
 
-                // Layer 3: UI Controls (fixed, stable)
-                controlsLayer
+                // Layer 3: UI Controls (isolated observation boundary)
+                ControlsOverlay(
+                    arManager: arManager,
+                    frontManager: frontManager,
+                    recorder: recorder,
+                    isBackCamera: isBackCamera,
+                    countdown: countdown,
+                    showSettings: $showSettings,
+                    delaySeconds: $delaySeconds,
+                    durationSeconds: $durationSeconds,
+                    delayText: $delayText,
+                    durationText: $durationText,
+                    lastRecording: lastRecording,
+                    isEn: isEn,
+                    onRecord: initiateRecording,
+                    onStop: stopRecording,
+                    onFlipCamera: flipCamera,
+                    onExportBVH: exportBVH,
+                    onExportJSON: exportJSON
+                )
             } else {
                 unsupportedView
             }
@@ -91,16 +109,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Controls Layer
-
-    private var controlsLayer: some View {
-        VStack(spacing: 0) {
-            topBar
-            Spacer()
-            bottomControls
-        }
-    }
-
     // MARK: - Countdown Overlay
 
     private var countdownOverlay: some View {
@@ -111,6 +119,168 @@ struct ContentView: View {
                 .foregroundColor(.white)
         }
         .allowsHitTesting(false)
+    }
+
+    // MARK: - Recording Logic
+
+    private func initiateRecording() {
+        guard (isBackCamera ? arManager.isTracking : frontManager.isTracking) else { return }
+        showSettings = false
+        lastRecording = nil
+
+        if delaySeconds > 0 {
+            countdown = delaySeconds
+            countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                countdown -= 1
+                if countdown <= 0 {
+                    countdownTimer?.invalidate()
+                    countdownTimer = nil
+                    beginRecording()
+                }
+            }
+        } else {
+            beginRecording()
+        }
+    }
+
+    private func beginRecording() {
+        if isBackCamera {
+            guard let body = arManager.bodyAnchor else { return }
+            recorder.startRecording3D(from: body)
+        } else {
+            recorder.startRecording2D()
+        }
+
+        if durationSeconds > 0 {
+            autoStopTimer = Timer.scheduledTimer(withTimeInterval: Double(durationSeconds), repeats: false) { _ in
+                stopRecording()
+            }
+        }
+    }
+
+    private func stopRecording() {
+        autoStopTimer?.invalidate()
+        autoStopTimer = nil
+        if let recording = recorder.stopRecording() {
+            lastRecording = recording
+        }
+    }
+
+    // MARK: - Camera Flip
+
+    private func flipCamera() {
+        guard !recorder.isRecording, countdown == 0 else { return }
+        lastRecording = nil
+
+        if isBackCamera {
+            arManager.stopTracking()
+            isBackCamera = false
+            frontManager.start()
+        } else {
+            frontManager.stop()
+            isBackCamera = true
+            arManager.startTracking()
+        }
+    }
+
+    // MARK: - Export
+
+    private func exportBVH(_ recording: Recording) {
+        let bvhString = BVHExporter.export(recording)
+        guard !bvhString.isEmpty else { return }
+        let fileName = "mocap_\(fileTimestamp()).bvh"
+        if let url = saveToTemp(data: Data(bvhString.utf8), fileName: fileName) {
+            exportItems = [url]
+            showExport = true
+        }
+    }
+
+    private func exportJSON(_ recording: Recording) {
+        guard let data = JSONExporter.export(recording) else { return }
+        let fileName = "mocap_\(fileTimestamp()).json"
+        if let url = saveToTemp(data: data, fileName: fileName) {
+            exportItems = [url]
+            showExport = true
+        }
+    }
+
+    private func saveToTemp(data: Data, fileName: String) -> URL? {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        do {
+            try data.write(to: url)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private func fileTimestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd_HHmmss"
+        return f.string(from: Date())
+    }
+
+    // MARK: - Unsupported
+
+    private var unsupportedView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "figure.stand")
+                .font(.system(size: 60))
+                .foregroundColor(.gray)
+            Text(isEn ? "Body Tracking Not Supported" : "ボディトラッキング非対応")
+                .font(.system(size: 20, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+            Text(isEn ? "Requires A12 chip or later." : "A12チップ以降が必要です。")
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+        }
+        .padding(40)
+    }
+}
+
+// MARK: - Controls Overlay (Isolated observation boundary)
+// Separate struct so recorder/manager observation doesn't cause parent ZStack to re-layout
+
+struct ControlsOverlay: View {
+    let arManager: BodyTrackingManager
+    let frontManager: FrontCameraManager
+    let recorder: MotionRecorder
+    let isBackCamera: Bool
+    let countdown: Int
+    @Binding var showSettings: Bool
+    @Binding var delaySeconds: Int
+    @Binding var durationSeconds: Int
+    @Binding var delayText: String
+    @Binding var durationText: String
+    let lastRecording: Recording?
+    let isEn: Bool
+    let onRecord: () -> Void
+    let onStop: () -> Void
+    let onFlipCamera: () -> Void
+    let onExportBVH: (Recording) -> Void
+    let onExportJSON: (Recording) -> Void
+
+    private var currentlyTracking: Bool {
+        isBackCamera ? arManager.isTracking : frontManager.isTracking
+    }
+
+    private var recDurationText: String {
+        let mins = Int(recorder.recordingDuration) / 60
+        let secs = Int(recorder.recordingDuration) % 60
+        return String(format: "%d:%02d", mins, secs)
+    }
+
+    private var hasTimerSettings: Bool {
+        delaySeconds > 0 || durationSeconds > 0
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            topBar
+            Spacer()
+            bottomControls
+        }
     }
 
     // MARK: - Top Bar
@@ -167,7 +337,7 @@ struct ContentView: View {
             .disabled(recorder.isRecording || countdown > 0)
 
             Button {
-                flipCamera()
+                onFlipCamera()
             } label: {
                 Image(systemName: "camera.rotate.fill")
                     .font(.system(size: 18))
@@ -185,10 +355,6 @@ struct ContentView: View {
         .background(.black.opacity(0.6))
     }
 
-    private var hasTimerSettings: Bool {
-        delaySeconds > 0 || durationSeconds > 0
-    }
-
     // MARK: - Bottom Controls
 
     private var bottomControls: some View {
@@ -199,7 +365,7 @@ struct ContentView: View {
 
             if !recorder.isRecording && countdown == 0 {
                 Button {
-                    initiateRecording()
+                    onRecord()
                 } label: {
                     ZStack {
                         Circle()
@@ -230,7 +396,7 @@ struct ContentView: View {
                 }
             } else if recorder.isRecording {
                 Button {
-                    stopRecording()
+                    onStop()
                 } label: {
                     HStack(spacing: 10) {
                         RoundedRectangle(cornerRadius: 4)
@@ -257,9 +423,9 @@ struct ContentView: View {
 
                     HStack(spacing: 12) {
                         if rec.is3D {
-                            exportButton(label: "BVH") { exportBVH(rec) }
+                            exportButton(label: "BVH") { onExportBVH(rec) }
                         }
-                        exportButton(label: "JSON") { exportJSON(rec) }
+                        exportButton(label: "JSON") { onExportJSON(rec) }
                     }
                 }
             }
@@ -354,6 +520,18 @@ struct ContentView: View {
                  : (isEn ? "Auto-stop after \(durationSeconds)s" : "\(durationSeconds)秒後に自動停止"))
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.white.opacity(0.4))
+
+            Button {
+                showSettings = false
+            } label: {
+                Text("OK")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(.cyan)
+                    .cornerRadius(8)
+            }
         }
         .padding(16)
         .background(.black.opacity(0.85))
@@ -381,135 +559,6 @@ struct ContentView: View {
                 .background(.cyan)
                 .cornerRadius(12)
         }
-    }
-
-    // MARK: - Recording Logic
-
-    private func initiateRecording() {
-        guard currentlyTracking else { return }
-        showSettings = false
-        lastRecording = nil
-
-        if delaySeconds > 0 {
-            countdown = delaySeconds
-            countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-                countdown -= 1
-                if countdown <= 0 {
-                    countdownTimer?.invalidate()
-                    countdownTimer = nil
-                    beginRecording()
-                }
-            }
-        } else {
-            beginRecording()
-        }
-    }
-
-    private func beginRecording() {
-        if isBackCamera {
-            guard let body = arManager.bodyAnchor else { return }
-            recorder.startRecording3D(from: body)
-        } else {
-            recorder.startRecording2D()
-        }
-
-        if durationSeconds > 0 {
-            autoStopTimer = Timer.scheduledTimer(withTimeInterval: Double(durationSeconds), repeats: false) { _ in
-                stopRecording()
-            }
-        }
-    }
-
-    private func stopRecording() {
-        autoStopTimer?.invalidate()
-        autoStopTimer = nil
-        if let recording = recorder.stopRecording() {
-            lastRecording = recording
-        }
-    }
-
-    // MARK: - Camera Flip
-
-    private func flipCamera() {
-        guard !recorder.isRecording, countdown == 0 else { return }
-        lastRecording = nil
-
-        if isBackCamera {
-            arManager.stopTracking()
-            isBackCamera = false
-            frontManager.start()
-        } else {
-            frontManager.stop()
-            isBackCamera = true
-            arManager.startTracking()
-        }
-    }
-
-    // MARK: - Computed
-
-    private var currentlyTracking: Bool {
-        isBackCamera ? arManager.isTracking : frontManager.isTracking
-    }
-
-    // MARK: - Export
-
-    private func exportBVH(_ recording: Recording) {
-        let bvhString = BVHExporter.export(recording)
-        guard !bvhString.isEmpty else { return }
-        let fileName = "mocap_\(fileTimestamp()).bvh"
-        if let url = saveToTemp(data: Data(bvhString.utf8), fileName: fileName) {
-            exportItems = [url]
-            showExport = true
-        }
-    }
-
-    private func exportJSON(_ recording: Recording) {
-        guard let data = JSONExporter.export(recording) else { return }
-        let fileName = "mocap_\(fileTimestamp()).json"
-        if let url = saveToTemp(data: data, fileName: fileName) {
-            exportItems = [url]
-            showExport = true
-        }
-    }
-
-    private func saveToTemp(data: Data, fileName: String) -> URL? {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
-        do {
-            try data.write(to: url)
-            return url
-        } catch {
-            return nil
-        }
-    }
-
-    private func fileTimestamp() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyyMMdd_HHmmss"
-        return f.string(from: Date())
-    }
-
-    private var recDurationText: String {
-        let mins = Int(recorder.recordingDuration) / 60
-        let secs = Int(recorder.recordingDuration) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-
-    // MARK: - Unsupported
-
-    private var unsupportedView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "figure.stand")
-                .font(.system(size: 60))
-                .foregroundColor(.gray)
-            Text(isEn ? "Body Tracking Not Supported" : "ボディトラッキング非対応")
-                .font(.system(size: 20, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
-            Text(isEn ? "Requires A12 chip or later." : "A12チップ以降が必要です。")
-                .font(.system(size: 14, design: .monospaced))
-                .foregroundColor(.gray)
-                .multilineTextAlignment(.center)
-        }
-        .padding(40)
     }
 }
 
