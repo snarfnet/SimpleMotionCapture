@@ -15,10 +15,11 @@ final class BodyTrackingManager: NSObject {
         ARBodyTrackingConfiguration.isSupported
     }
 
-    private(set) var arView: ARView?
+    private var arView: ARView?
     var onBodyUpdate: ((ARBodyAnchor, TimeInterval) -> Void)?
 
-    func setupARView() -> ARView {
+    func getOrCreateARView() -> ARView {
+        if let existing = arView { return existing }
         let view = ARView(frame: .zero)
         view.session.delegate = self
         view.environment.background = .cameraFeed()
@@ -27,10 +28,10 @@ final class BodyTrackingManager: NSObject {
     }
 
     func startTracking() {
-        guard BodyTrackingManager.isSupported else { return }
+        guard BodyTrackingManager.isSupported, let arView = arView else { return }
         let config = ARBodyTrackingConfiguration()
         config.automaticSkeletonScaleEstimationEnabled = true
-        arView?.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+        arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
     }
 
     func stopTracking() {

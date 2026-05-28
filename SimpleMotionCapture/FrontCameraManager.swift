@@ -9,12 +9,25 @@ final class FrontCameraManager: NSObject {
     var parentIndices: [Int] = []
     var isTracking = false
 
+    var onPoseDetected: (([CGPoint?], TimeInterval) -> Void)?
+
     private let videoOutput = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "front.camera.queue")
     private let confidenceThreshold: Float = 0.1
+    private var isConfigured = false
 
-    // Vision joints in drawing order
-    private let jointNames: [VNHumanBodyPoseObservation.JointName] = [
+    static let jointNames: [String] = [
+        "nose", "leftEye", "rightEye", "leftEar", "rightEar",
+        "leftShoulder", "rightShoulder",
+        "leftElbow", "rightElbow",
+        "leftWrist", "rightWrist",
+        "leftHip", "rightHip",
+        "leftKnee", "rightKnee",
+        "leftAnkle", "rightAnkle",
+        "neck", "root"
+    ]
+
+    private let visionJoints: [VNHumanBodyPoseObservation.JointName] = [
         .nose, .leftEye, .rightEye, .leftEar, .rightEar,
         .leftShoulder, .rightShoulder,
         .leftElbow, .rightElbow,
@@ -25,8 +38,7 @@ final class FrontCameraManager: NSObject {
         .neck, .root
     ]
 
-    // Parent index for each joint (matching jointNames order)
-    private let parentMap: [Int] = [
+    static let parentMap: [Int] = [
         17,  // nose -> neck
         0,   // leftEye -> nose
         0,   // rightEye -> nose
@@ -44,16 +56,21 @@ final class FrontCameraManager: NSObject {
         12,  // rightKnee -> rightHip
         13,  // leftAnkle -> leftKnee
         14,  // rightAnkle -> rightKnee
-        -1,  // neck (connected to root via shoulders)
+        -1,  // neck
         -1   // root
     ]
 
     func start() {
-        guard !session.isRunning else { return }
-        parentIndices = parentMap
+        parentIndices = FrontCameraManager.parentMap
         queue.async { [weak self] in
-            self?.configureSession()
-            self?.session.startRunning()
+            guard let self = self else { return }
+            if !self.isConfigured {
+                self.configureSession()
+                self.isConfigured = true
+            }
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
         }
     }
 
@@ -61,8 +78,10 @@ final class FrontCameraManager: NSObject {
         queue.async { [weak self] in
             self?.session.stopRunning()
         }
-        isTracking = false
-        jointPositions = [:]
+        DispatchQueue.main.async { [weak self] in
+            self?.isTracking = false
+            self?.jointPositions = [:]
+        }
     }
 
     private func configureSession() {
@@ -95,26 +114,33 @@ final class FrontCameraManager: NSObject {
 extension FrontCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
 
         let request = VNDetectHumanBodyPoseRequest { [weak self] request, _ in
             guard let self = self,
                   let results = request.results as? [VNHumanBodyPoseObservation],
                   let observation = results.first else {
-                DispatchQueue.main.async { self?.isTracking = false }
+                DispatchQueue.main.async { [weak self] in self?.isTracking = false }
                 return
             }
 
             var positions: [Int: CGPoint] = [:]
-            for (i, name) in self.jointNames.enumerated() {
+            var posArray: [CGPoint?] = Array(repeating: nil, count: self.visionJoints.count)
+
+            for (i, name) in self.visionJoints.enumerated() {
                 guard let point = try? observation.recognizedPoint(name),
                       point.confidence > self.confidenceThreshold else { continue }
-                positions[i] = CGPoint(x: point.location.x, y: 1 - point.location.y)
+                let p = CGPoint(x: point.location.x, y: 1 - point.location.y)
+                positions[i] = p
+                posArray[i] = p
             }
 
             DispatchQueue.main.async {
                 self.jointPositions = positions
                 self.isTracking = !positions.isEmpty
             }
+
+            self.onPoseDetected?(posArray, timestamp)
         }
 
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])

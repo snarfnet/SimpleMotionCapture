@@ -4,21 +4,21 @@ import simd
 struct BVHExporter {
 
     static func export(_ recording: Recording) -> String {
-        let info = recording.skeletonInfo
+        guard let info = recording.skeletonInfo, let frames = recording.frames else { return "" }
+
         var bvh = "HIERARCHY\n"
         bvh += writeJoint(index: 0, info: info, depth: 0, isRoot: true)
         bvh += "MOTION\n"
-        bvh += "Frames: \(recording.frameCount)\n"
-        let frameTime = recording.frameCount > 1
-            ? recording.duration / Double(recording.frameCount - 1)
+        bvh += "Frames: \(frames.count)\n"
+        let frameTime = frames.count > 1
+            ? recording.duration / Double(frames.count - 1)
             : 1.0 / 60.0
         bvh += String(format: "Frame Time: %.6f\n", frameTime)
 
-        for frame in recording.frames {
+        for frame in frames {
             var values: [String] = []
 
-            // Root: 6 channels (position + rotation)
-            let pos = frame.rootWorldPosition * 100 // meters -> cm
+            let pos = frame.rootWorldPosition * 100
             values.append(String(format: "%.4f", pos.x))
             values.append(String(format: "%.4f", pos.y))
             values.append(String(format: "%.4f", pos.z))
@@ -27,7 +27,6 @@ struct BVHExporter {
             values.append(String(format: "%.4f", rootEuler.x))
             values.append(String(format: "%.4f", rootEuler.y))
 
-            // Other joints: 3 channels (rotation only)
             for i in 1..<info.jointNames.count {
                 let euler = eulerZXY(from: frame.jointLocalTransforms[i])
                 values.append(String(format: "%.4f", euler.z))
@@ -40,8 +39,6 @@ struct BVHExporter {
 
         return bvh
     }
-
-    // MARK: - Hierarchy
 
     private static func writeJoint(index: Int, info: SkeletonInfo, depth: Int, isRoot: Bool) -> String {
         let indent = String(repeating: "\t", count: depth)
@@ -79,8 +76,6 @@ struct BVHExporter {
         s += "\(indent)}\n"
         return s
     }
-
-    // MARK: - Euler Extraction (ZXY order)
 
     static func eulerZXY(from m: simd_float4x4) -> SIMD3<Float> {
         let r01 = m.columns.1.x

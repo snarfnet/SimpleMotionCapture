@@ -10,6 +10,17 @@ struct ContentView: View {
     @State private var exportItems: [Any] = []
     @State private var isBackCamera = true
 
+    // Timer settings
+    @State private var delaySeconds = 0      // 0 = no delay
+    @State private var durationSeconds = 0   // 0 = manual stop
+    @State private var countdown = 0
+    @State private var countdownTimer: Timer?
+    @State private var autoStopTimer: Timer?
+    @State private var showSettings = false
+
+    private let delayOptions = [0, 3, 5, 10]
+    private let durationOptions = [0, 10, 15, 30, 60, 120]
+
     private let isEn = Locale.preferredLanguages.first?.hasPrefix("ja") != true
 
     var body: some View {
@@ -21,11 +32,21 @@ struct ContentView: View {
             } else {
                 unsupportedView
             }
+
+            // Countdown overlay
+            if countdown > 0 {
+                countdownOverlay
+            }
         }
         .onAppear {
             arManager.onBodyUpdate = { [recorder] body, timestamp in
                 DispatchQueue.main.async {
-                    recorder.recordFrame(body: body, timestamp: timestamp)
+                    recorder.recordFrame3D(body: body, timestamp: timestamp)
+                }
+            }
+            frontManager.onPoseDetected = { [recorder] positions, timestamp in
+                DispatchQueue.main.async {
+                    recorder.recordFrame2D(positions: positions, timestamp: timestamp)
                 }
             }
             arManager.startTracking()
@@ -37,15 +58,26 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Countdown Overlay
+
+    private var countdownOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.5).ignoresSafeArea()
+            Text("\(countdown)")
+                .font(.system(size: 120, weight: .black, design: .monospaced))
+                .foregroundColor(.white)
+        }
+    }
+
     // MARK: - Tracking View
 
     private var trackingView: some View {
         ZStack {
-            // Camera views
-            if isBackCamera {
-                ARTrackingView(manager: arManager)
-                    .ignoresSafeArea()
+            ARTrackingView(manager: arManager)
+                .ignoresSafeArea()
+                .opacity(isBackCamera ? 1 : 0)
 
+            if isBackCamera {
                 SkeletonOverlay(
                     positions: arManager.jointScreenPositions,
                     parentIndices: arManager.parentIndices,
@@ -56,7 +88,6 @@ struct ContentView: View {
                 CameraPreview(session: frontManager.session)
                     .ignoresSafeArea()
 
-                // Front camera: Vision 2D skeleton (normalized 0-1 coords)
                 FrontSkeletonOverlay(
                     positions: frontManager.jointPositions,
                     parentIndices: frontManager.parentIndices
@@ -74,7 +105,6 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack {
-            // Tracking status
             HStack(spacing: 6) {
                 Circle()
                     .fill(currentlyTracking ? .green : .red.opacity(0.5))
@@ -102,82 +132,96 @@ struct ContentView: View {
                     Text("\(recorder.frameCount)f")
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(.white.opacity(0.5))
+                    if durationSeconds > 0 {
+                        Text("/ \(durationSeconds)s")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.3))
+                    }
                 }
             }
 
             Spacer()
+
+            // Settings button
+            Button {
+                showSettings.toggle()
+            } label: {
+                Image(systemName: "timer")
+                    .font(.system(size: 18))
+                    .foregroundColor(hasTimerSettings ? .cyan : .white)
+                    .padding(10)
+                    .background(.black.opacity(0.5))
+                    .clipShape(Circle())
+            }
+            .disabled(recorder.isRecording || countdown > 0)
 
             // Camera flip button
             Button {
                 flipCamera()
             } label: {
                 Image(systemName: "camera.rotate.fill")
-                    .font(.system(size: 20))
+                    .font(.system(size: 18))
                     .foregroundColor(.white)
                     .padding(10)
                     .background(.black.opacity(0.5))
                     .clipShape(Circle())
             }
-            .disabled(recorder.isRecording)
-            .opacity(recorder.isRecording ? 0.3 : 1)
+            .disabled(recorder.isRecording || countdown > 0)
+            .opacity(recorder.isRecording || countdown > 0 ? 0.3 : 1)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 8)
         .background(.black.opacity(0.5))
     }
 
+    private var hasTimerSettings: Bool {
+        delaySeconds > 0 || durationSeconds > 0
+    }
+
     private var bottomControls: some View {
         VStack(spacing: 16) {
-            // Camera mode indicator
-            if !isBackCamera {
-                Text(isEn ? "Front Camera (2D Preview)" : "前面カメラ（2Dプレビュー）")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.yellow.opacity(0.8))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .background(.black.opacity(0.6))
-                    .cornerRadius(8)
+            // Timer settings panel
+            if showSettings {
+                settingsPanel
             }
 
-            if !recorder.isRecording {
-                // Record button (back camera only)
+            if !recorder.isRecording && countdown == 0 {
+                // Record button
                 Button {
-                    if isBackCamera {
-                        guard let body = arManager.bodyAnchor else { return }
-                        recorder.startRecording(from: body)
-                    }
+                    initiateRecording()
                 } label: {
                     ZStack {
                         Circle()
                             .stroke(.white.opacity(0.6), lineWidth: 4)
                             .frame(width: 80, height: 80)
                         Circle()
-                            .fill(isBackCamera ? .red : .gray)
+                            .fill(.red)
                             .frame(width: 64, height: 64)
-                        Text(isEn ? "REC" : "録画")
-                            .font(.system(size: 14, weight: .black, design: .monospaced))
-                            .foregroundColor(.white)
+                        VStack(spacing: 2) {
+                            Text(isEn ? "REC" : "録画")
+                                .font(.system(size: 14, weight: .black, design: .monospaced))
+                                .foregroundColor(.white)
+                            if delaySeconds > 0 {
+                                Text("\(delaySeconds)s")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                        }
                     }
                 }
-                .disabled(!canRecord)
-                .opacity(canRecord ? 1 : 0.4)
+                .disabled(!currentlyTracking)
+                .opacity(currentlyTracking ? 1 : 0.4)
 
-                if !isBackCamera {
-                    Text(isEn ? "Switch to back camera to record 3D motion" : "3D録画は背面カメラに切り替えてください")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                } else if !arManager.isTracking {
+                if !currentlyTracking {
                     Text(isEn ? "Point camera at a person" : "人物にカメラを向けてください")
                         .font(.system(size: 13, weight: .medium, design: .monospaced))
                         .foregroundColor(.white.opacity(0.6))
                 }
-            } else {
+            } else if recorder.isRecording {
                 // Stop button
                 Button {
-                    if let recording = recorder.stopRecording() {
-                        lastRecording = recording
-                    }
+                    stopRecording()
                 } label: {
                     HStack(spacing: 10) {
                         RoundedRectangle(cornerRadius: 4)
@@ -194,8 +238,8 @@ struct ContentView: View {
                 }
             }
 
-            // Export buttons (after recording)
-            if let rec = lastRecording, !recorder.isRecording {
+            // Export buttons
+            if let rec = lastRecording, !recorder.isRecording, countdown == 0 {
                 VStack(spacing: 10) {
                     Text(isEn
                          ? "\(rec.frameCount) frames / \(rec.durationString) / \(String(format: "%.0f", rec.fps)) fps"
@@ -204,17 +248,55 @@ struct ContentView: View {
                         .foregroundColor(.white.opacity(0.6))
 
                     HStack(spacing: 12) {
-                        exportButton(label: "BVH") {
-                            exportBVH(rec)
+                        if rec.is3D {
+                            exportButton(label: "BVH") { exportBVH(rec) }
                         }
-                        exportButton(label: "JSON") {
-                            exportJSON(rec)
-                        }
+                        exportButton(label: "JSON") { exportJSON(rec) }
                     }
                 }
             }
         }
         .padding(.bottom, 40)
+    }
+
+    // MARK: - Settings Panel
+
+    private var settingsPanel: some View {
+        VStack(spacing: 12) {
+            // Delay picker
+            HStack {
+                Text(isEn ? "Delay" : "開始まで")
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(width: 80, alignment: .leading)
+                Picker("", selection: $delaySeconds) {
+                    ForEach(delayOptions, id: \.self) { sec in
+                        Text(sec == 0 ? (isEn ? "Off" : "なし") : "\(sec)s")
+                            .tag(sec)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            // Duration picker
+            HStack {
+                Text(isEn ? "Duration" : "録画時間")
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(width: 80, alignment: .leading)
+                Picker("", selection: $durationSeconds) {
+                    ForEach(durationOptions, id: \.self) { sec in
+                        Text(sec == 0 ? (isEn ? "Manual" : "手動") : "\(sec)s")
+                            .tag(sec)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+        .padding(16)
+        .background(.black.opacity(0.8))
+        .cornerRadius(16)
+        .padding(.horizontal, 20)
     }
 
     private func exportButton(label: String, action: @escaping () -> Void) -> some View {
@@ -229,21 +311,66 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Recording Logic
+
+    private func initiateRecording() {
+        guard currentlyTracking else { return }
+        showSettings = false
+        lastRecording = nil
+
+        if delaySeconds > 0 {
+            countdown = delaySeconds
+            countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                countdown -= 1
+                if countdown <= 0 {
+                    countdownTimer?.invalidate()
+                    countdownTimer = nil
+                    beginRecording()
+                }
+            }
+        } else {
+            beginRecording()
+        }
+    }
+
+    private func beginRecording() {
+        if isBackCamera {
+            guard let body = arManager.bodyAnchor else { return }
+            recorder.startRecording3D(from: body)
+        } else {
+            recorder.startRecording2D()
+        }
+
+        // Auto-stop timer
+        if durationSeconds > 0 {
+            autoStopTimer = Timer.scheduledTimer(withTimeInterval: Double(durationSeconds), repeats: false) { _ in
+                stopRecording()
+            }
+        }
+    }
+
+    private func stopRecording() {
+        autoStopTimer?.invalidate()
+        autoStopTimer = nil
+        if let recording = recorder.stopRecording() {
+            lastRecording = recording
+        }
+    }
+
     // MARK: - Camera Flip
 
     private func flipCamera() {
-        guard !recorder.isRecording else { return }
+        guard !recorder.isRecording, countdown == 0 else { return }
+        lastRecording = nil
 
         if isBackCamera {
-            // Switch to front camera
             arManager.stopTracking()
-            frontManager.start()
             isBackCamera = false
+            frontManager.start()
         } else {
-            // Switch to back camera
             frontManager.stop()
-            arManager.startTracking()
             isBackCamera = true
+            arManager.startTracking()
         }
     }
 
@@ -253,14 +380,11 @@ struct ContentView: View {
         isBackCamera ? arManager.isTracking : frontManager.isTracking
     }
 
-    private var canRecord: Bool {
-        isBackCamera && arManager.isTracking
-    }
-
     // MARK: - Export
 
     private func exportBVH(_ recording: Recording) {
         let bvhString = BVHExporter.export(recording)
+        guard !bvhString.isEmpty else { return }
         let fileName = "mocap_\(fileTimestamp()).bvh"
         if let url = saveToTemp(data: Data(bvhString.utf8), fileName: fileName) {
             exportItems = [url]
@@ -310,8 +434,8 @@ struct ContentView: View {
                 .font(.system(size: 20, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
             Text(isEn
-                 ? "This device does not support ARKit Body Tracking.\nRequires A12 chip or later."
-                 : "このデバイスはARKitボディトラッキングに対応していません。\nA12チップ以降が必要です。")
+                 ? "Requires A12 chip or later."
+                 : "A12チップ以降が必要です。")
                 .font(.system(size: 14, design: .monospaced))
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
@@ -348,7 +472,7 @@ struct SkeletonOverlay: View {
     }
 }
 
-// MARK: - Front Skeleton Overlay (Vision - normalized 0-1 coordinates)
+// MARK: - Front Skeleton Overlay (normalized 0-1 coordinates)
 
 struct FrontSkeletonOverlay: View {
     let positions: [Int: CGPoint]
@@ -365,20 +489,20 @@ struct FrontSkeletonOverlay: View {
                 var path = Path()
                 path.move(to: childPos)
                 path.addLine(to: parentPos)
-                context.stroke(path, with: .color(.green.opacity(0.7)), lineWidth: 2.5)
+                context.stroke(path, with: .color(.cyan.opacity(0.7)), lineWidth: 2.5)
             }
             for (_, norm) in positions {
                 let pos = CGPoint(x: norm.x * size.width, y: norm.y * size.height)
                 let r: CGFloat = 4
                 let rect = CGRect(x: pos.x - r, y: pos.y - r, width: r * 2, height: r * 2)
-                context.fill(Path(ellipseIn: rect), with: .color(.green))
+                context.fill(Path(ellipseIn: rect), with: .color(.cyan))
                 context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.8)), lineWidth: 1)
             }
         }
     }
 }
 
-// MARK: - Activity View (Share Sheet)
+// MARK: - Activity View
 
 struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]

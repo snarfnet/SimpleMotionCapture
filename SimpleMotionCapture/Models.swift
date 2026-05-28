@@ -1,6 +1,8 @@
 import Foundation
 import simd
 
+// MARK: - 3D (ARKit)
+
 struct RecordedFrame {
     let timestamp: TimeInterval
     let rootWorldPosition: SIMD3<Float>
@@ -13,14 +15,35 @@ struct SkeletonInfo {
     let restPoseLocalTransforms: [simd_float4x4]
 }
 
+// MARK: - 2D (Vision)
+
+struct RecordedFrame2D {
+    let timestamp: TimeInterval
+    let jointPositions: [CGPoint?]  // normalized 0-1, nil if not detected
+}
+
+struct SkeletonInfo2D {
+    let jointNames: [String]
+    let parentIndices: [Int]
+}
+
+// MARK: - Recording
+
 struct Recording: Identifiable {
     let id = UUID()
     let date: Date
     let duration: TimeInterval
     let frameCount: Int
     let fps: Double
-    let skeletonInfo: SkeletonInfo
-    let frames: [RecordedFrame]
+    let is3D: Bool
+
+    // 3D data (ARKit)
+    var skeletonInfo: SkeletonInfo?
+    var frames: [RecordedFrame]?
+
+    // 2D data (Vision)
+    var skeletonInfo2D: SkeletonInfo2D?
+    var frames2D: [RecordedFrame2D]?
 
     var dateString: String {
         let f = DateFormatter()

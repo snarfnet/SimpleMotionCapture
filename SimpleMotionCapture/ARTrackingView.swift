@@ -6,7 +6,7 @@ struct ARTrackingView: UIViewRepresentable {
     let manager: BodyTrackingManager
 
     func makeUIView(context: Context) -> ARView {
-        manager.setupARView()
+        manager.getOrCreateARView()
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {}
