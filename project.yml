@@ -25,3 +25,4 @@ targets:
         INFOPLIST_KEY_CFBundleIconName: AppIcon
         INFOPLIST_KEY_UIRequiredDeviceCapabilities: "arkit"
         SWIFT_VERSION: "5.9"
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: false
