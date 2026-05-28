@@ -11,15 +11,14 @@ struct ContentView: View {
     @State private var isBackCamera = true
 
     // Timer settings
-    @State private var delaySeconds = 0      // 0 = no delay
-    @State private var durationSeconds = 0   // 0 = manual stop
+    @State private var delaySeconds = 0
+    @State private var durationSeconds = 0
+    @State private var delayText = ""
+    @State private var durationText = ""
     @State private var countdown = 0
     @State private var countdownTimer: Timer?
     @State private var autoStopTimer: Timer?
     @State private var showSettings = false
-
-    private let delayOptions = [0, 3, 5, 10]
-    private let durationOptions = [0, 10, 15, 30, 60, 120]
 
     private let isEn = Locale.preferredLanguages.first?.hasPrefix("ja") != true
 
@@ -28,12 +27,21 @@ struct ContentView: View {
             Color.black.ignoresSafeArea()
 
             if BodyTrackingManager.isSupported || !isBackCamera {
-                trackingView
+                // Layer 1: Camera
+                cameraLayer
+                    .ignoresSafeArea()
+
+                // Layer 2: Skeleton (frequent updates, no layout impact)
+                skeletonLayer
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+
+                // Layer 3: UI Controls (fixed, stable)
+                controlsLayer
             } else {
                 unsupportedView
             }
 
-            // Countdown overlay
             if countdown > 0 {
                 countdownOverlay
             }
@@ -58,6 +66,41 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Camera Layer
+
+    private var cameraLayer: some View {
+        ZStack {
+            ARTrackingView(manager: arManager)
+                .opacity(isBackCamera ? 1 : 0)
+
+            if !isBackCamera {
+                CameraPreview(session: frontManager.session)
+            }
+        }
+    }
+
+    // MARK: - Skeleton Layer
+
+    private var skeletonLayer: some View {
+        Group {
+            if isBackCamera {
+                SkeletonView(manager: arManager)
+            } else {
+                FrontSkeletonView(manager: frontManager)
+            }
+        }
+    }
+
+    // MARK: - Controls Layer
+
+    private var controlsLayer: some View {
+        VStack(spacing: 0) {
+            topBar
+            Spacer()
+            bottomControls
+        }
+    }
+
     // MARK: - Countdown Overlay
 
     private var countdownOverlay: some View {
@@ -67,41 +110,10 @@ struct ContentView: View {
                 .font(.system(size: 120, weight: .black, design: .monospaced))
                 .foregroundColor(.white)
         }
+        .allowsHitTesting(false)
     }
 
-    // MARK: - Tracking View
-
-    private var trackingView: some View {
-        ZStack {
-            ARTrackingView(manager: arManager)
-                .ignoresSafeArea()
-                .opacity(isBackCamera ? 1 : 0)
-
-            if isBackCamera {
-                SkeletonOverlay(
-                    positions: arManager.jointScreenPositions,
-                    parentIndices: arManager.parentIndices,
-                    color: .cyan
-                )
-                .ignoresSafeArea()
-            } else {
-                CameraPreview(session: frontManager.session)
-                    .ignoresSafeArea()
-
-                FrontSkeletonOverlay(
-                    positions: frontManager.jointPositions,
-                    parentIndices: frontManager.parentIndices
-                )
-                .ignoresSafeArea()
-            }
-
-            VStack {
-                topBar
-                Spacer()
-                bottomControls
-            }
-        }
-    }
+    // MARK: - Top Bar
 
     private var topBar: some View {
         HStack {
@@ -110,7 +122,7 @@ struct ContentView: View {
                     .fill(currentlyTracking ? .green : .red.opacity(0.5))
                     .frame(width: 10, height: 10)
                 Text(currentlyTracking
-                     ? (isEn ? "Body Detected" : "検出中")
+                     ? (isEn ? "Tracking" : "検出中")
                      : (isEn ? "No Body" : "未検出"))
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.8))
@@ -126,7 +138,7 @@ struct ContentView: View {
                     Text("REC")
                         .font(.system(size: 14, weight: .black, design: .monospaced))
                         .foregroundColor(.red)
-                    Text(durationText)
+                    Text(recDurationText)
                         .font(.system(size: 14, weight: .bold, design: .monospaced))
                         .foregroundColor(.white.opacity(0.7))
                     Text("\(recorder.frameCount)f")
@@ -142,7 +154,6 @@ struct ContentView: View {
 
             Spacer()
 
-            // Settings button
             Button {
                 showSettings.toggle()
             } label: {
@@ -155,7 +166,6 @@ struct ContentView: View {
             }
             .disabled(recorder.isRecording || countdown > 0)
 
-            // Camera flip button
             Button {
                 flipCamera()
             } label: {
@@ -172,22 +182,22 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .background(.black.opacity(0.5))
+        .background(.black.opacity(0.6))
     }
 
     private var hasTimerSettings: Bool {
         delaySeconds > 0 || durationSeconds > 0
     }
 
+    // MARK: - Bottom Controls
+
     private var bottomControls: some View {
         VStack(spacing: 16) {
-            // Timer settings panel
             if showSettings {
                 settingsPanel
             }
 
             if !recorder.isRecording && countdown == 0 {
-                // Record button
                 Button {
                     initiateRecording()
                 } label: {
@@ -219,7 +229,6 @@ struct ContentView: View {
                         .foregroundColor(.white.opacity(0.6))
                 }
             } else if recorder.isRecording {
-                // Stop button
                 Button {
                     stopRecording()
                 } label: {
@@ -238,7 +247,6 @@ struct ContentView: View {
                 }
             }
 
-            // Export buttons
             if let rec = lastRecording, !recorder.isRecording, countdown == 0 {
                 VStack(spacing: 10) {
                     Text(isEn
@@ -262,41 +270,105 @@ struct ContentView: View {
     // MARK: - Settings Panel
 
     private var settingsPanel: some View {
-        VStack(spacing: 12) {
-            // Delay picker
-            HStack {
+        VStack(spacing: 14) {
+            // Delay
+            HStack(spacing: 12) {
                 Text(isEn ? "Delay" : "開始まで")
                     .font(.system(size: 14, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.8))
                     .frame(width: 80, alignment: .leading)
-                Picker("", selection: $delaySeconds) {
-                    ForEach(delayOptions, id: \.self) { sec in
-                        Text(sec == 0 ? (isEn ? "Off" : "なし") : "\(sec)s")
-                            .tag(sec)
+
+                HStack(spacing: 8) {
+                    Button { adjustDelay(-1) } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.cyan)
                     }
+
+                    TextField("0", text: $delayText)
+                        .font(.system(size: 20, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .keyboardType(.numberPad)
+                        .frame(width: 60)
+                        .padding(.vertical, 6)
+                        .background(.white.opacity(0.1))
+                        .cornerRadius(8)
+                        .onChange(of: delayText) { _, newVal in
+                            delaySeconds = max(0, Int(newVal) ?? 0)
+                        }
+
+                    Button { adjustDelay(1) } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.cyan)
+                    }
+
+                    Text(isEn ? "sec" : "秒")
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
                 }
-                .pickerStyle(.segmented)
             }
 
-            // Duration picker
-            HStack {
+            // Duration
+            HStack(spacing: 12) {
                 Text(isEn ? "Duration" : "録画時間")
                     .font(.system(size: 14, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.8))
                     .frame(width: 80, alignment: .leading)
-                Picker("", selection: $durationSeconds) {
-                    ForEach(durationOptions, id: \.self) { sec in
-                        Text(sec == 0 ? (isEn ? "Manual" : "手動") : "\(sec)s")
-                            .tag(sec)
+
+                HStack(spacing: 8) {
+                    Button { adjustDuration(-5) } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.cyan)
                     }
+
+                    TextField("0", text: $durationText)
+                        .font(.system(size: 20, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .keyboardType(.numberPad)
+                        .frame(width: 60)
+                        .padding(.vertical, 6)
+                        .background(.white.opacity(0.1))
+                        .cornerRadius(8)
+                        .onChange(of: durationText) { _, newVal in
+                            durationSeconds = max(0, Int(newVal) ?? 0)
+                        }
+
+                    Button { adjustDuration(5) } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.cyan)
+                    }
+
+                    Text(isEn ? "sec" : "秒")
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
                 }
-                .pickerStyle(.segmented)
             }
+
+            Text(durationSeconds == 0
+                 ? (isEn ? "Manual stop" : "手動停止")
+                 : (isEn ? "Auto-stop after \(durationSeconds)s" : "\(durationSeconds)秒後に自動停止"))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.white.opacity(0.4))
         }
         .padding(16)
-        .background(.black.opacity(0.8))
+        .background(.black.opacity(0.85))
         .cornerRadius(16)
         .padding(.horizontal, 20)
+    }
+
+    private func adjustDelay(_ delta: Int) {
+        delaySeconds = max(0, delaySeconds + delta)
+        delayText = delaySeconds == 0 ? "" : "\(delaySeconds)"
+    }
+
+    private func adjustDuration(_ delta: Int) {
+        durationSeconds = max(0, durationSeconds + delta)
+        durationText = durationSeconds == 0 ? "" : "\(durationSeconds)"
     }
 
     private func exportButton(label: String, action: @escaping () -> Void) -> some View {
@@ -341,7 +413,6 @@ struct ContentView: View {
             recorder.startRecording2D()
         }
 
-        // Auto-stop timer
         if durationSeconds > 0 {
             autoStopTimer = Timer.scheduledTimer(withTimeInterval: Double(durationSeconds), repeats: false) { _ in
                 stopRecording()
@@ -417,7 +488,7 @@ struct ContentView: View {
         return f.string(from: Date())
     }
 
-    private var durationText: String {
+    private var recDurationText: String {
         let mins = Int(recorder.recordingDuration) / 60
         let secs = Int(recorder.recordingDuration) % 60
         return String(format: "%d:%02d", mins, secs)
@@ -433,9 +504,7 @@ struct ContentView: View {
             Text(isEn ? "Body Tracking Not Supported" : "ボディトラッキング非対応")
                 .font(.system(size: 20, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
-            Text(isEn
-                 ? "Requires A12 chip or later."
-                 : "A12チップ以降が必要です。")
+            Text(isEn ? "Requires A12 chip or later." : "A12チップ以降が必要です。")
                 .font(.system(size: 14, design: .monospaced))
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
@@ -444,43 +513,46 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Skeleton Overlay (ARKit - screen coordinates)
+// MARK: - Skeleton View (ARKit - isolated from main UI)
 
-struct SkeletonOverlay: View {
-    let positions: [Int: CGPoint]
-    let parentIndices: [Int]
-    var color: Color = .cyan
+struct SkeletonView: View {
+    let manager: BodyTrackingManager
 
     var body: some View {
         Canvas { context, size in
-            for (i, parentIdx) in parentIndices.enumerated() {
+            let positions = manager.jointScreenPositions
+            let parents = manager.parentIndices
+
+            for (i, parentIdx) in parents.enumerated() {
                 guard parentIdx >= 0,
                       let childPos = positions[i],
                       let parentPos = positions[parentIdx] else { continue }
                 var path = Path()
                 path.move(to: childPos)
                 path.addLine(to: parentPos)
-                context.stroke(path, with: .color(color.opacity(0.7)), lineWidth: 2.5)
+                context.stroke(path, with: .color(.cyan.opacity(0.7)), lineWidth: 2.5)
             }
             for (_, pos) in positions {
                 let r: CGFloat = 4
                 let rect = CGRect(x: pos.x - r, y: pos.y - r, width: r * 2, height: r * 2)
-                context.fill(Path(ellipseIn: rect), with: .color(color))
+                context.fill(Path(ellipseIn: rect), with: .color(.cyan))
                 context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.8)), lineWidth: 1)
             }
         }
     }
 }
 
-// MARK: - Front Skeleton Overlay (normalized 0-1 coordinates)
+// MARK: - Front Skeleton View (Vision - isolated from main UI)
 
-struct FrontSkeletonOverlay: View {
-    let positions: [Int: CGPoint]
-    let parentIndices: [Int]
+struct FrontSkeletonView: View {
+    let manager: FrontCameraManager
 
     var body: some View {
         Canvas { context, size in
-            for (i, parentIdx) in parentIndices.enumerated() {
+            let positions = manager.jointPositions
+            let parents = manager.parentIndices
+
+            for (i, parentIdx) in parents.enumerated() {
                 guard parentIdx >= 0,
                       let childNorm = positions[i],
                       let parentNorm = positions[parentIdx] else { continue }
