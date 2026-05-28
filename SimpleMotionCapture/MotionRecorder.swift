@@ -23,7 +23,7 @@ final class MotionRecorder {
         }
 
         skeletonInfo = SkeletonInfo(
-            jointNames: def.jointNames.map { $0.rawValue },
+            jointNames: def.jointNames,
             parentIndices: def.parentIndices.map { Int($0) },
             restPoseLocalTransforms: restTransforms
         )
