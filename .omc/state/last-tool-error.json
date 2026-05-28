@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"KEY_FILE=\\\"C:/Users/Windows/Downloads/AuthKey_WDXGY9WX55.p8\\\" && KEY_ID=\\\"WDXGY9WX55\\\" && ISSUER_ID=\\\"2be0734f-943a-4d61-9dc9-5d9045c46fec\\\" && NOW=$(date +%s) && EXP=$((NOW + 1200)) && AP...",
+  "error": "Exit code 1\nTraceback (most recent call last):\r\n  File \"<string>\", line 55, in <module>\r\n    resp3 = urllib.request.urlopen(req3)\r\n  File \"C:\\Users\\Windows\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\urllib\\request.py\", line 187, in urlopen\r\n    return opener.open(url, data, timeout)\r\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\Windows\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\urllib\\request.py\", line 493, in open\r\n    response = meth(req, response)\r\n  File \"C:\\Users\\Windows\\A...",
+  "timestamp": "2026-05-28T09:43:49.583Z",
+  "retry_count": 1
+}

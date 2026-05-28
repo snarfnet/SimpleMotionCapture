@@ -2,12 +2,13 @@ import SwiftUI
 import ARKit
 
 struct ContentView: View {
-    @State private var manager = BodyTrackingManager()
+    @State private var arManager = BodyTrackingManager()
+    @State private var frontManager = FrontCameraManager()
     @State private var recorder = MotionRecorder()
     @State private var lastRecording: Recording?
     @State private var showExport = false
     @State private var exportItems: [Any] = []
-    @State private var showUnsupported = false
+    @State private var isBackCamera = true
 
     private let isEn = Locale.preferredLanguages.first?.hasPrefix("ja") != true
 
@@ -15,21 +16,19 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if BodyTrackingManager.isSupported {
+            if BodyTrackingManager.isSupported || !isBackCamera {
                 trackingView
             } else {
                 unsupportedView
             }
         }
         .onAppear {
-            if BodyTrackingManager.isSupported {
-                manager.onBodyUpdate = { [recorder] body, timestamp in
-                    DispatchQueue.main.async {
-                        recorder.recordFrame(body: body, timestamp: timestamp)
-                    }
+            arManager.onBodyUpdate = { [recorder] body, timestamp in
+                DispatchQueue.main.async {
+                    recorder.recordFrame(body: body, timestamp: timestamp)
                 }
-                manager.startTracking()
             }
+            arManager.startTracking()
         }
         .sheet(isPresented: $showExport) {
             if !exportItems.isEmpty {
@@ -42,23 +41,32 @@ struct ContentView: View {
 
     private var trackingView: some View {
         ZStack {
-            ARTrackingView(manager: manager)
-                .ignoresSafeArea()
+            // Camera views
+            if isBackCamera {
+                ARTrackingView(manager: arManager)
+                    .ignoresSafeArea()
 
-            // Skeleton overlay
-            SkeletonOverlay(
-                positions: manager.jointScreenPositions,
-                parentIndices: manager.parentIndices
-            )
-            .ignoresSafeArea()
+                SkeletonOverlay(
+                    positions: arManager.jointScreenPositions,
+                    parentIndices: arManager.parentIndices,
+                    color: .cyan
+                )
+                .ignoresSafeArea()
+            } else {
+                CameraPreview(session: frontManager.session)
+                    .ignoresSafeArea()
+
+                // Front camera: Vision 2D skeleton (normalized 0-1 coords)
+                FrontSkeletonOverlay(
+                    positions: frontManager.jointPositions,
+                    parentIndices: frontManager.parentIndices
+                )
+                .ignoresSafeArea()
+            }
 
             VStack {
-                // Top status bar
                 topBar
-
                 Spacer()
-
-                // Bottom controls
                 bottomControls
             }
         }
@@ -69,9 +77,9 @@ struct ContentView: View {
             // Tracking status
             HStack(spacing: 6) {
                 Circle()
-                    .fill(manager.isTracking ? .green : .red.opacity(0.5))
+                    .fill(currentlyTracking ? .green : .red.opacity(0.5))
                     .frame(width: 10, height: 10)
-                Text(manager.isTracking
+                Text(currentlyTracking
                      ? (isEn ? "Body Detected" : "検出中")
                      : (isEn ? "No Body" : "未検出"))
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -85,7 +93,6 @@ struct ContentView: View {
                     Circle()
                         .fill(.red)
                         .frame(width: 10, height: 10)
-                        .opacity(pulseOpacity)
                     Text("REC")
                         .font(.system(size: 14, weight: .black, design: .monospaced))
                         .foregroundColor(.red)
@@ -97,6 +104,22 @@ struct ContentView: View {
                         .foregroundColor(.white.opacity(0.5))
                 }
             }
+
+            Spacer()
+
+            // Camera flip button
+            Button {
+                flipCamera()
+            } label: {
+                Image(systemName: "camera.rotate.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(.black.opacity(0.5))
+                    .clipShape(Circle())
+            }
+            .disabled(recorder.isRecording)
+            .opacity(recorder.isRecording ? 0.3 : 1)
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
@@ -104,37 +127,47 @@ struct ContentView: View {
         .background(.black.opacity(0.5))
     }
 
-    @State private var pulsePhase = false
-
-    private var pulseOpacity: Double {
-        // Simple blink indicator
-        recorder.isRecording ? (Int(Date().timeIntervalSince1970 * 2) % 2 == 0 ? 1 : 0.3) : 0
-    }
-
     private var bottomControls: some View {
         VStack(spacing: 16) {
+            // Camera mode indicator
+            if !isBackCamera {
+                Text(isEn ? "Front Camera (2D Preview)" : "前面カメラ（2Dプレビュー）")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.yellow.opacity(0.8))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.6))
+                    .cornerRadius(8)
+            }
+
             if !recorder.isRecording {
-                // Record button
+                // Record button (back camera only)
                 Button {
-                    guard let body = manager.bodyAnchor else { return }
-                    recorder.startRecording(from: body)
+                    if isBackCamera {
+                        guard let body = arManager.bodyAnchor else { return }
+                        recorder.startRecording(from: body)
+                    }
                 } label: {
                     ZStack {
                         Circle()
                             .stroke(.white.opacity(0.6), lineWidth: 4)
                             .frame(width: 80, height: 80)
                         Circle()
-                            .fill(.red)
+                            .fill(isBackCamera ? .red : .gray)
                             .frame(width: 64, height: 64)
                         Text(isEn ? "REC" : "録画")
                             .font(.system(size: 14, weight: .black, design: .monospaced))
                             .foregroundColor(.white)
                     }
                 }
-                .disabled(!manager.isTracking)
-                .opacity(manager.isTracking ? 1 : 0.4)
+                .disabled(!canRecord)
+                .opacity(canRecord ? 1 : 0.4)
 
-                if !manager.isTracking {
+                if !isBackCamera {
+                    Text(isEn ? "Switch to back camera to record 3D motion" : "3D録画は背面カメラに切り替えてください")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                } else if !arManager.isTracking {
                     Text(isEn ? "Point camera at a person" : "人物にカメラを向けてください")
                         .font(.system(size: 13, weight: .medium, design: .monospaced))
                         .foregroundColor(.white.opacity(0.6))
@@ -196,6 +229,34 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Camera Flip
+
+    private func flipCamera() {
+        guard !recorder.isRecording else { return }
+
+        if isBackCamera {
+            // Switch to front camera
+            arManager.stopTracking()
+            frontManager.start()
+            isBackCamera = false
+        } else {
+            // Switch to back camera
+            frontManager.stop()
+            arManager.startTracking()
+            isBackCamera = true
+        }
+    }
+
+    // MARK: - Computed
+
+    private var currentlyTracking: Bool {
+        isBackCamera ? arManager.isTracking : frontManager.isTracking
+    }
+
+    private var canRecord: Bool {
+        isBackCamera && arManager.isTracking
+    }
+
     // MARK: - Export
 
     private func exportBVH(_ recording: Recording) {
@@ -232,8 +293,6 @@ struct ContentView: View {
         return f.string(from: Date())
     }
 
-    // MARK: - Helpers
-
     private var durationText: String {
         let mins = Int(recorder.recordingDuration) / 60
         let secs = Int(recorder.recordingDuration) % 60
@@ -261,15 +320,15 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Skeleton Overlay
+// MARK: - Skeleton Overlay (ARKit - screen coordinates)
 
 struct SkeletonOverlay: View {
     let positions: [Int: CGPoint]
     let parentIndices: [Int]
+    var color: Color = .cyan
 
     var body: some View {
         Canvas { context, size in
-            // Lines (child -> parent)
             for (i, parentIdx) in parentIndices.enumerated() {
                 guard parentIdx >= 0,
                       let childPos = positions[i],
@@ -277,14 +336,42 @@ struct SkeletonOverlay: View {
                 var path = Path()
                 path.move(to: childPos)
                 path.addLine(to: parentPos)
-                context.stroke(path, with: .color(.cyan.opacity(0.7)), lineWidth: 2.5)
+                context.stroke(path, with: .color(color.opacity(0.7)), lineWidth: 2.5)
             }
-
-            // Joints
             for (_, pos) in positions {
                 let r: CGFloat = 4
                 let rect = CGRect(x: pos.x - r, y: pos.y - r, width: r * 2, height: r * 2)
-                context.fill(Path(ellipseIn: rect), with: .color(.cyan))
+                context.fill(Path(ellipseIn: rect), with: .color(color))
+                context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.8)), lineWidth: 1)
+            }
+        }
+    }
+}
+
+// MARK: - Front Skeleton Overlay (Vision - normalized 0-1 coordinates)
+
+struct FrontSkeletonOverlay: View {
+    let positions: [Int: CGPoint]
+    let parentIndices: [Int]
+
+    var body: some View {
+        Canvas { context, size in
+            for (i, parentIdx) in parentIndices.enumerated() {
+                guard parentIdx >= 0,
+                      let childNorm = positions[i],
+                      let parentNorm = positions[parentIdx] else { continue }
+                let childPos = CGPoint(x: childNorm.x * size.width, y: childNorm.y * size.height)
+                let parentPos = CGPoint(x: parentNorm.x * size.width, y: parentNorm.y * size.height)
+                var path = Path()
+                path.move(to: childPos)
+                path.addLine(to: parentPos)
+                context.stroke(path, with: .color(.green.opacity(0.7)), lineWidth: 2.5)
+            }
+            for (_, norm) in positions {
+                let pos = CGPoint(x: norm.x * size.width, y: norm.y * size.height)
+                let r: CGFloat = 4
+                let rect = CGRect(x: pos.x - r, y: pos.y - r, width: r * 2, height: r * 2)
+                context.fill(Path(ellipseIn: rect), with: .color(.green))
                 context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.8)), lineWidth: 1)
             }
         }
